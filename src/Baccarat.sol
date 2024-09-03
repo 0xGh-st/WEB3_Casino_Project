@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.0;
 
-import "@openzeppelin/contracts-upgradeable/access/AccessControlEnumerableUpgradeable.sol";
-
+import "openzeppelin-contracts-upgradeable/proxy/utils/Initializable.sol";
+import "openzeppelin-contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import "openzeppelin-contracts-upgradeable/access/OwnableUpgradeable.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import "./IGameChainManager.sol";
 
-contract Baccarat is AccessControlEnumerableUpgradeable {
+contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable{
     
     uint256 public constant SUPER6_BANKER = 0;
     uint256 public constant PLAYER_BET = 1;
