@@ -111,7 +111,7 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
 
         delete players; // Reset players array for the next round
 
-		currentState = BaccarateStateMachine.Bet;
+		currentState = BaccaratStateMachine.Bet;
     }
 
     function _dealCards() internal returns (Hand memory playerHand, Hand memory bankerHand) {
@@ -151,7 +151,7 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
 
     function _drawCard() internal view returns (uint8) {
 		// random
-        uint8 card = uint8(block.blockhash(checkPoint)) % 13 + 1;
+        uint8 card = uint8(uint256(blockhash(checkPoint))) % 13 + 1;
         if (card > 10) card = 0; // Face cards are worth 0 points
         return card;
     }
