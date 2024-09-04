@@ -8,6 +8,7 @@ import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
     enum BetType { Player, Banker, Tie }
     enum GameResult { PlayerWin, BankerWin, Tie }
+	enum BaccaratStateMachine{ Bet, Resolve }
 
     struct Bet {
         address player;
@@ -24,8 +25,11 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
     uint256 public minBet;
     uint256 public maxBet;
     uint256 public houseEdge;
+	uint256 checkPoint;
     mapping(address => Bet) public activeBets;
     address[] public players;
+
+	BaccaratStateMachine currentState = BaccaratStateMachine.Bet;
 
     event BetPlaced(address indexed player, uint256 amount, BetType betType);
     event BetResolved(address indexed player, BetType betType, GameResult result, uint256 payout);
@@ -37,6 +41,16 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
         GameResult result
     );
 
+	modifier bettingPhase(){
+		require(currentState==BaccaratStateMachine.Bet, "Betting Phase");
+		_;
+	}
+
+	modifier resolvePhase(){
+		require(currentState==BaccaratStateMachine.Resolve, "Resolve Phase");
+		_;
+	}
+
     function initialize(uint256 _minBet, uint256 _maxBet, uint256 _houseEdge) public initializer {
         __Ownable_init(msg.sender);
         __UUPSUpgradeable_init();
@@ -45,7 +59,7 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
         houseEdge = _houseEdge;
     }
 
-    function placeBet(BetType _betType) external payable {
+    function placeBet(BetType _betType) external payable bettingPhase {
         require(msg.value >= minBet && msg.value <= maxBet, "Bet amount out of range");
         require(activeBets[msg.sender].amount == 0, "Active bet already exists");
 
@@ -56,13 +70,18 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
             resolved: false
         });
         players.push(msg.sender);
+		
+		if(players.length == 5){
+			currentState = BaccaratStateMachine.Resolve;
+			checkPoint = block.number;
+		}
 
         emit BetPlaced(msg.sender, msg.value, _betType);
     }
 
-    function resolveBets() external onlyOwner {
+    function resolveBets() external onlyOwner resolvePhase {
         require(players.length > 0, "No active bets");
-
+		require(checkPoint != block.number, "Please Next Block");
         (Hand memory playerHand, Hand memory bankerHand) = _dealCards();
         GameResult gameResult = _determineOutcome(playerHand, bankerHand);
 
@@ -91,6 +110,8 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
         }
 
         delete players; // Reset players array for the next round
+
+		currentState = BaccarateStateMachine.Bet;
     }
 
     function _dealCards() internal returns (Hand memory playerHand, Hand memory bankerHand) {
@@ -129,7 +150,8 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
     }
 
     function _drawCard() internal view returns (uint8) {
-        uint8 card = uint8(uint256(keccak256(abi.encodePacked(block.timestamp, block.difficulty, msg.sender))) % 13) + 1;
+		// random
+        uint8 card = uint8(block.blockhash(checkPoint)) % 13 + 1;
         if (card > 10) card = 0; // Face cards are worth 0 points
         return card;
     }
