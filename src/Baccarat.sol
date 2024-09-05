@@ -8,7 +8,7 @@ import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
     enum BetType { Player, Banker, Tie }
     enum GameResult { PlayerWin, BankerWin, Tie }
-	enum BaccaratStateMachine{ Bet, Resolve }
+    enum BaccaratStateMachine { Bet, Resolve, ClaimPlayer, ClaimOwner }
 
     struct Bet {
         address player;
@@ -24,12 +24,19 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
 
     uint256 public minBet;
     uint256 public maxBet;
-    uint256 public houseEdge;
-	uint256 checkPoint;
+    uint256 public houseEdge; // fee percentage
+    uint256 public checkPoint; // for Random
+    uint256 public totalBetAmount; // Total bet amount in the current game
+    uint256 public feeAmount; // Total fee collected
+    uint256 public claimedPlayers; // Track the number of players who have claimed
     mapping(address => Bet) public activeBets;
+    mapping(address => uint256) public playerRewards;
     address[] public players;
+    address[] public winners;
 
-	BaccaratStateMachine currentState = BaccaratStateMachine.Bet;
+    BaccaratStateMachine public currentState = BaccaratStateMachine.Bet;
+
+	bool isStopped = false; // for emergency stop
 
     event BetPlaced(address indexed player, uint256 amount, BetType betType);
     event BetResolved(address indexed player, BetType betType, GameResult result, uint256 payout);
@@ -41,14 +48,37 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
         GameResult result
     );
 
-	modifier bettingPhase(){
-		require(currentState==BaccaratStateMachine.Bet, "Betting Phase");
+    modifier bettingPhase() {
+        require(currentState == BaccaratStateMachine.Bet, "Not in Betting Phase");
+        _;
+    }
+
+    modifier resolvePhase() {
+        require(currentState == BaccaratStateMachine.Resolve, "Not in Resolve Phase");
+        _;
+    }
+
+    modifier claimPlayerPhase() {
+        require(currentState == BaccaratStateMachine.ClaimPlayer, "Not in Claim Player Phase");
+        _;
+    }
+
+    modifier claimOwnerPhase() {
+        require(currentState == BaccaratStateMachine.ClaimOwner, "Not in Claim Owner Phase");
+        _;
+    }
+
+	modifier stoppedInEmergency{
+		require(!isStopped);
 		_;
 	}
 
-	modifier resolvePhase(){
-		require(currentState==BaccaratStateMachine.Resolve, "Resolve Phase");
-		_;
+	function stopContract() public onlyOwner(){
+		isStopped = true;
+	}
+
+	function resumeContract() public onlyOwner{
+		isStopped = false;
 	}
 
     function initialize(uint256 _minBet, uint256 _maxBet, uint256 _houseEdge) public initializer {
@@ -59,8 +89,8 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
         houseEdge = _houseEdge;
     }
 
-    function placeBet(BetType _betType) external payable bettingPhase {
-        require(msg.value >= minBet && msg.value <= maxBet, "Bet amount out of range");
+    function placeBet(BetType _betType) external payable bettingPhase stoppedInEmergency {
+        require(msg.value == 0.001 ether, "Bet amount must be exactly 0.001 ether");
         require(activeBets[msg.sender].amount == 0, "Active bet already exists");
 
         activeBets[msg.sender] = Bet({
@@ -70,22 +100,23 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
             resolved: false
         });
         players.push(msg.sender);
-		
-		if(players.length == 5){
-			currentState = BaccaratStateMachine.Resolve;
-			checkPoint = block.number;
-		}
+
+        totalBetAmount += msg.value;
+
+        if (players.length == 5) {
+            currentState = BaccaratStateMachine.Resolve;
+            checkPoint = block.number;
+        }
 
         emit BetPlaced(msg.sender, msg.value, _betType);
     }
 
-    function resolveBets() external onlyOwner resolvePhase {
-        require(players.length > 0, "No active bets");
-		require(checkPoint != block.number, "Please Next Block");
+    function resolveBets() external resolvePhase {
+        require(checkPoint != block.number, "Please wait until the next block");
+
         (Hand memory playerHand, Hand memory bankerHand) = _dealCards();
         GameResult gameResult = _determineOutcome(playerHand, bankerHand);
 
-        // Emit the game result event with detailed information
         emit GameResultEvent(
             playerHand.cards,
             bankerHand.cards,
@@ -94,63 +125,101 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
             gameResult
         );
 
+        uint256 winnerCount = 0;
         for (uint256 i = 0; i < players.length; i++) {
             address playerAddress = players[i];
             Bet storage bet = activeBets[playerAddress];
 
             if (!bet.resolved) {
-                uint256 payout = calculatePayout(bet.amount, bet.betType, gameResult);
-                if (payout > 0) {
-                    payable(bet.player).transfer(payout);
+                if ((bet.betType == BetType.Player && gameResult == GameResult.PlayerWin) ||
+                    (bet.betType == BetType.Banker && gameResult == GameResult.BankerWin) ||
+                    (bet.betType == BetType.Tie && gameResult == GameResult.Tie)) {
+                    winners.push(playerAddress);
+                    winnerCount++;
                 }
-
                 bet.resolved = true;
-                emit BetResolved(bet.player, bet.betType, gameResult, payout);
             }
         }
 
-        delete players; // Reset players array for the next round
+        if (winnerCount > 0) {
+            // If there are winners, distribute rewards after deducting fee
+            feeAmount += 0.0001 ether;  // Owner fee
+            uint256 totalReward = totalBetAmount - 0.0001 ether;
+            uint256 rewardPerWinner = totalReward / winnerCount;
 
-		currentState = BaccaratStateMachine.Bet;
+            for (uint256 j = 0; j < winners.length; j++) {
+                playerRewards[winners[j]] += rewardPerWinner;
+                emit BetResolved(winners[j], activeBets[winners[j]].betType, gameResult, rewardPerWinner);
+            }
+            currentState = BaccaratStateMachine.ClaimPlayer;
+        } else {
+            // No winners, owner claims all
+            feeAmount += totalBetAmount;
+            currentState = BaccaratStateMachine.ClaimOwner;
+        }
+
+        delete players;
+        totalBetAmount = 0;
+        claimedPlayers = 0; // Reset claimed players count for the next round
     }
 
-    function _dealCards() internal returns (Hand memory playerHand, Hand memory bankerHand) {
+    function claimReward() external claimPlayerPhase {
+        require(playerRewards[msg.sender] > 0, "No rewards to claim");
+        uint256 reward = playerRewards[msg.sender];
+        playerRewards[msg.sender] = 0;
+        payable(msg.sender).transfer(reward);
+
+        claimedPlayers++;
+        if (claimedPlayers == winners.length) {
+            currentState = BaccaratStateMachine.ClaimOwner;
+        }
+    }
+
+    function claimFee() external onlyOwner claimOwnerPhase {
+        require(feeAmount > 0, "No fee to claim");
+        uint256 amountToClaim = feeAmount;
+        feeAmount = 0;
+        payable(owner()).transfer(amountToClaim);
+
+        currentState = BaccaratStateMachine.Bet; // Reset to betting phase after claiming
+    }
+
+    function _dealCards() internal view returns (Hand memory playerHand, Hand memory bankerHand) {
         playerHand.cards = _multicallDrawCard(2);
         bankerHand.cards = _multicallDrawCard(2);
 
         playerHand.score = _calculateScore(playerHand.cards);
         bankerHand.score = _calculateScore(bankerHand.cards);
 
-		if (playerHand.score <= 5) {
-			uint8[] memory newPlayerCards = new uint8[](playerHand.cards.length + 1);
-			for (uint8 i = 0; i < playerHand.cards.length; i++) {
-				newPlayerCards[i] = playerHand.cards[i];
-			}
-			newPlayerCards[playerHand.cards.length] = _multicallDrawCard(1)[0];
-			playerHand.cards = newPlayerCards;
-			playerHand.score = _calculateScore(playerHand.cards);
-		}
+        if (playerHand.score <= 5) {
+            uint8[] memory newPlayerCards = new uint8[](playerHand.cards.length + 1);
+            for (uint8 i = 0; i < playerHand.cards.length; i++) {
+                newPlayerCards[i] = playerHand.cards[i];
+            }
+            newPlayerCards[playerHand.cards.length] = _multicallDrawCard(1)[0];
+            playerHand.cards = newPlayerCards;
+            playerHand.score = _calculateScore(playerHand.cards);
+        }
 
-		if (bankerHand.score < 3 || 
-			(bankerHand.score == 3 && playerHand.cards.length == 3 && playerHand.cards[2] != 8) ||
-			(bankerHand.score == 4 && playerHand.cards.length == 3 && (playerHand.cards[2] >= 2 && playerHand.cards[2] <= 7)) ||
-			(bankerHand.score == 5 && playerHand.cards.length == 3 && (playerHand.cards[2] >= 4 && playerHand.cards[2] <= 7)) ||
-			(bankerHand.score == 6 && playerHand.cards.length == 3 && (playerHand.cards[2] == 6 || playerHand.cards[2] == 7))) {
+        if (bankerHand.score < 3 || 
+            (bankerHand.score == 3 && playerHand.cards.length == 3 && playerHand.cards[2] != 8) ||
+            (bankerHand.score == 4 && playerHand.cards.length == 3 && (playerHand.cards[2] >= 2 && playerHand.cards[2] <= 7)) ||
+            (bankerHand.score == 5 && playerHand.cards.length == 3 && (playerHand.cards[2] >= 4 && playerHand.cards[2] <= 7)) ||
+            (bankerHand.score == 6 && playerHand.cards.length == 3 && (playerHand.cards[2] == 6 || playerHand.cards[2] == 7))) {
 
-			uint8[] memory newBankerCards = new uint8[](bankerHand.cards.length + 1);
-			for (uint8 i = 0; i < bankerHand.cards.length; i++) {
-				newBankerCards[i] = bankerHand.cards[i];
-			}
-			newBankerCards[bankerHand.cards.length] = _multicallDrawCard(1)[0];
-			bankerHand.cards = newBankerCards;
-			bankerHand.score = _calculateScore(bankerHand.cards);
-		}
+            uint8[] memory newBankerCards = new uint8[](bankerHand.cards.length + 1);
+            for (uint8 i = 0; i < bankerHand.cards.length; i++) {
+                newBankerCards[i] = bankerHand.cards[i];
+            }
+            newBankerCards[bankerHand.cards.length] = _multicallDrawCard(1)[0];
+            bankerHand.cards = newBankerCards;
+            bankerHand.score = _calculateScore(bankerHand.cards);
+        }
 
         return (playerHand, bankerHand);
     }
 
     function _drawCard() internal view returns (uint8) {
-		// random
         uint8 card = uint8(uint256(blockhash(checkPoint))) % 13 + 1;
         if (card > 10) card = 0; // Face cards are worth 0 points
         return card;
@@ -182,27 +251,6 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
         }
     }
 
-    function calculatePayout(uint256 amount, BetType betType, GameResult gameResult) internal view returns (uint256) {
-        if ((betType == BetType.Player && gameResult == GameResult.PlayerWin) ||
-            (betType == BetType.Banker && gameResult == GameResult.BankerWin) ||
-            (betType == BetType.Tie && gameResult == GameResult.Tie)) {
-            uint256 payout = amount * getMultiplier(betType) * (100 - houseEdge) / 100;
-            return payout;
-        }
-        return 0;
-    }
-
-    function getMultiplier(BetType betType) internal pure returns (uint256) {
-        if (betType == BetType.Player) {
-            return 2; // 1:1 payout
-        } else if (betType == BetType.Banker) {
-            return 2; // 1:1 payout, typically minus a commission
-        } else if (betType == BetType.Tie) {
-            return 9; // 8:1 payout
-        }
-        return 0;
-    }
-
-    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
+    function _authorizeUpgrade(address newImplementation) internal override onlyOwner stoppedInEmergency {}
 }
 
