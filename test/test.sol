@@ -16,7 +16,7 @@ contract BaccaratTest is Test {
     address player4;
     address player5;
 
-    function setUp() external {
+    function setUp() public {
         owner = address(this);
         player1 = address(0x1234);
         player2 = address(0x5678);
@@ -167,8 +167,6 @@ contract BaccaratTest is Test {
 		);
 		assertTrue(success, "Upgrade should be allowed when contract is stopped");
 
-		//proxyAsBaccarat.initialize(0.002 ether, 0.02 ether, 10);
-
 		vm.startPrank(player4);
 		(success, ) = address(proxyAsBaccarat).call{value: 0.001 ether}(
 				abi.encodeWithSelector(proxyAsBaccarat.placeBet.selector, Baccarat.BetType.Banker)
@@ -188,6 +186,50 @@ contract BaccaratTest is Test {
 		vm.stopPrank();
 	}
 
+	function test_playThreeRounds() external {
+		setUp();
+		for (uint256 i = 0; i <= 2; i++) {
+			vm.startPrank(player1);
+			proxyAsBaccarat.placeBet{value: 0.001 ether}(Baccarat.BetType.Player);
+			vm.stopPrank();
+
+			vm.startPrank(player2);
+			proxyAsBaccarat.placeBet{value: 0.001 ether}(Baccarat.BetType.Banker);
+			vm.stopPrank();
+
+			vm.startPrank(player3);
+			proxyAsBaccarat.placeBet{value: 0.001 ether}(Baccarat.BetType.Tie);
+			vm.stopPrank();
+
+			vm.startPrank(player4);
+			proxyAsBaccarat.placeBet{value: 0.001 ether}(Baccarat.BetType.Player);
+			vm.stopPrank();
+
+			vm.startPrank(player5);
+			proxyAsBaccarat.placeBet{value: 0.001 ether}(Baccarat.BetType.Banker);
+			vm.stopPrank();
+
+			vm.roll(block.number + 3 + i);
+
+			vm.prank(owner);
+			proxyAsBaccarat.resolveBets();
+
+			uint256 winnerCount = proxyAsBaccarat.getWinnersCount();
+			if (winnerCount > 0) {
+				for (uint256 i = 0; i < winnerCount; i++) {
+					address winner = proxyAsBaccarat.winners(i);
+					vm.startPrank(winner);
+					proxyAsBaccarat.claimReward();
+					vm.stopPrank();
+				}
+			}
+
+			vm.prank(owner);
+			proxyAsBaccarat.claimFee();
+
+			assertEq(uint(proxyAsBaccarat.currentState()), uint(Baccarat.BaccaratStateMachine.Bet));
+		}
+	}
 
 	receive() external payable {}
 }

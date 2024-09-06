@@ -164,6 +164,10 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
             currentState = BaccaratStateMachine.ClaimOwner;
         }
 
+        for (uint256 i = 0; i < players.length; i++) {
+            delete activeBets[players[i]];
+        }
+
         delete players;
         totalBetAmount = 0;
         claimedPlayers = 0; // Reset claimed players count for the next round
@@ -179,6 +183,7 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
         claimedPlayers++;
         if (claimedPlayers == winners.length) {
             currentState = BaccaratStateMachine.ClaimOwner;
+            delete winners;
         }
     }
 
