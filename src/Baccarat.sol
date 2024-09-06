@@ -26,6 +26,7 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
     uint256 public maxBet;
     uint256 public houseEdge; // fee percentage
     uint256 public checkPoint; // for Random
+	uint256 public nonce; // for Random
     uint256 public totalBetAmount; // Total bet amount in the current game
     uint256 public feeAmount; // Total fee collected
     uint256 public claimedPlayers; // Track the number of players who have claimed
@@ -71,9 +72,14 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
 	modifier stoppedInEmergency{
 		require(!isStopped);
 		_;
-	}
+	} 
 
-	function stopContract() public onlyOwner(){
+	modifier onlyWhenStopped {
+        require(isStopped);
+        _;
+    }
+
+	function stopContract() public onlyOwner bettingPhase{
 		isStopped = true;
 	}
 
@@ -105,14 +111,14 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
 
         if (players.length == 5) {
             currentState = BaccaratStateMachine.Resolve;
-            checkPoint = block.number;
+            checkPoint = block.number + 1;
         }
 
         emit BetPlaced(msg.sender, msg.value, _betType);
     }
 
     function resolveBets() external resolvePhase {
-        require(checkPoint != block.number, "Please wait until the next block");
+        require(checkPoint < block.number, "Please wait until the next block");
 
         (Hand memory playerHand, Hand memory bankerHand) = _dealCards();
         GameResult gameResult = _determineOutcome(playerHand, bankerHand);
@@ -167,7 +173,8 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
         require(playerRewards[msg.sender] > 0, "No rewards to claim");
         uint256 reward = playerRewards[msg.sender];
         playerRewards[msg.sender] = 0;
-        payable(msg.sender).transfer(reward);
+        (bool success, ) = payable(msg.sender).call{value: reward}("");
+		require(success, "Error: claimReward");
 
         claimedPlayers++;
         if (claimedPlayers == winners.length) {
@@ -179,12 +186,17 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
         require(feeAmount > 0, "No fee to claim");
         uint256 amountToClaim = feeAmount;
         feeAmount = 0;
-        payable(owner()).transfer(amountToClaim);
+        (bool success, ) = payable(owner()).call{value: amountToClaim}("");
+		require(success, "Error: claimFee");
 
         currentState = BaccaratStateMachine.Bet; // Reset to betting phase after claiming
     }
 
-    function _dealCards() internal view returns (Hand memory playerHand, Hand memory bankerHand) {
+	function getWinnersCount() external returns(uint256){
+		return winners.length;
+	}
+
+    function _dealCards() internal returns (Hand memory playerHand, Hand memory bankerHand) {
         playerHand.cards = _multicallDrawCard(2);
         bankerHand.cards = _multicallDrawCard(2);
 
@@ -219,13 +231,14 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
         return (playerHand, bankerHand);
     }
 
-    function _drawCard() internal view returns (uint8) {
-        uint8 card = uint8(uint256(blockhash(checkPoint))) % 13 + 1;
+    function _drawCard() internal returns (uint8) {
+        uint8 card = uint8(uint256(keccak256(abi.encodePacked(blockhash(checkPoint), nonce)))) % 13 + 1;
+		nonce++;
         if (card > 10) card = 0; // Face cards are worth 0 points
         return card;
     }
 
-    function _multicallDrawCard(uint8 numCards) internal view returns (uint8[] memory) {
+    function _multicallDrawCard(uint8 numCards) internal returns (uint8[] memory) {
         uint8[] memory cards = new uint8[](numCards);
         for (uint8 i = 0; i < numCards; i++) {
             cards[i] = _drawCard();
@@ -251,6 +264,11 @@ contract Baccarat is Initializable, UUPSUpgradeable, OwnableUpgradeable {
         }
     }
 
-    function _authorizeUpgrade(address newImplementation) internal override onlyOwner stoppedInEmergency {}
+    function _authorizeUpgrade(address newImplementation) internal override onlyOwner onlyWhenStopped {}
+
+	function emergencyWithdraw() public onlyWhenStopped onlyOwner{
+		(bool success, ) = payable(owner()).call{value: address(this).balance}("");
+		require(success, "Error: emergencyWithdraw");
+	}
 }
 
